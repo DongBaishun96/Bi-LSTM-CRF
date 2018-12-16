@@ -1,130 +1,13 @@
-# -*- coding: utf-8 -*-
-r"""
-Advanced: Making Dynamic Decisions and the Bi-LSTM CRF
-======================================================
-
-Dynamic versus Static Deep Learning Toolkits
---------------------------------------------
-
-Pytorch is a *dynamic* neural network kit. Another example of a dynamic
-kit is `Dynet <https://github.com/clab/dynet>`__ (I mention this because
-working with Pytorch and Dynet is similar. If you see an example in
-Dynet, it will probably help you implement it in Pytorch). The opposite
-is the *static* tool kit, which includes Theano, Keras, TensorFlow, etc.
-The core difference is the following:
-
-* In a static toolkit, you define
-  a computation graph once, compile it, and then stream instances to it.
-* In a dynamic toolkit, you define a computation graph *for each
-  instance*. It is never compiled and is executed on-the-fly
-
-Without a lot of experience, it is difficult to appreciate the
-difference. One example is to suppose we want to build a deep
-constituent parser. Suppose our model involves roughly the following
-steps:
-
-* We build the tree bottom up
-* Tag the root nodes (the words of the sentence)
-* From there, use a neural network and the embeddings
-  of the words to find combinations that form constituents. Whenever you
-  form a new constituent, use some sort of technique to get an embedding
-  of the constituent. In this case, our network architecture will depend
-  completely on the input sentence. In the sentence "The green cat
-  scratched the wall", at some point in the model, we will want to combine
-  the span :math:`(i,j,r) = (1, 3, \text{NP})` (that is, an NP constituent
-  spans word 1 to word 3, in this case "The green cat").
-
-However, another sentence might be "Somewhere, the big fat cat scratched
-the wall". In this sentence, we will want to form the constituent
-:math:`(2, 4, NP)` at some point. The constituents we will want to form
-will depend on the instance. If we just compile the computation graph
-once, as in a static toolkit, it will be exceptionally difficult or
-impossible to program this logic. In a dynamic toolkit though, there
-isn't just 1 pre-defined computation graph. There can be a new
-computation graph for each instance, so this problem goes away.
-
-Dynamic toolkits also have the advantage of being easier to debug and
-the code more closely resembling the host language (by that I mean that
-Pytorch and Dynet look more like actual Python code than Keras or
-Theano).
-
-Bi-LSTM Conditional Random Field Discussion
--------------------------------------------
-
-For this section, we will see a full, complicated example of a Bi-LSTM
-Conditional Random Field for named-entity recognition. The LSTM tagger
-above is typically sufficient for part-of-speech tagging, but a sequence
-model like the CRF is really essential for strong performance on NER.
-Familiarity with CRF's is assumed. Although this name sounds scary, all
-the model is is a CRF but where an LSTM provides the features. This is
-an advanced model though, far more complicated than any earlier model in
-this tutorial. If you want to skip it, that is fine. To see if you're
-ready, see if you can:
-
--  Write the recurrence for the viterbi variable at step i for tag k.
--  Modify the above recurrence to compute the forward variables instead.
--  Modify again the above recurrence to compute the forward variables in
-   log-space (hint: log-sum-exp)
-
-If you can do those three things, you should be able to understand the
-code below. Recall that the CRF computes a conditional probability. Let
-:math:`y` be a tag sequence and :math:`x` an input sequence of words.
-Then we compute
-
-.. math::  P(y|x) = \frac{\exp{(\text{Score}(x, y)})}{\sum_{y'} \exp{(\text{Score}(x, y')})}
-
-Where the score is determined by defining some log potentials
-:math:`\log \psi_i(x,y)` such that
-
-.. math::  \text{Score}(x,y) = \sum_i \log \psi_i(x,y)
-
-To make the partition function tractable, the potentials must look only
-at local features.
-
-In the Bi-LSTM CRF, we define two kinds of potentials: emission and
-transition. The emission potential for the word at index :math:`i` comes
-from the hidden state of the Bi-LSTM at timestep :math:`i`. The
-transition scores are stored in a :math:`|T|x|T|` matrix
-:math:`\textbf{P}`, where :math:`T` is the tag set. In my
-implementation, :math:`\textbf{P}_{j,k}` is the score of transitioning
-to tag :math:`j` from tag :math:`k`. So:
-
-.. math::  \text{Score}(x,y) = \sum_i \log \psi_\text{EMIT}(y_i \rightarrow x_i) + \log \psi_\text{TRANS}(y_{i-1} \rightarrow y_i)
-
-.. math::  = \sum_i h_i[y_i] + \textbf{P}_{y_i, y_{i-1}}
-
-where in this second expression, we think of the tags as being assigned
-unique non-negative indices.
-
-If the above discussion was too brief, you can check out
-`this <http://www.cs.columbia.edu/%7Emcollins/crf.pdf>`__ write up from
-Michael Collins on CRFs.
-
-Implementation Notes
---------------------
-
-The example below implements the forward algorithm in log space to
-compute the partition function, and the viterbi algorithm to decode.
-Backpropagation will compute the gradients automatically for us. We
-don't have to do anything by hand.
-
-The implementation is not optimized. If you understand what is going on,
-you'll probably quickly see that iterating over the next tag in the
-forward algorithm could probably be done in one big operation. I wanted
-to code to be more readable. If you want to make the relevant change,
-you could probably use this tagger for real tasks.
-"""
-# Author: Robert Guthrie
+# coding: utf-8
+#  Advanced: Making Dynamic Decisions and the Bi-LSTM CRF
 
 import torch
-import torch.autograd as autograd
 import torch.nn as nn
 import torch.optim as optim
+import datetime as dt
+import pandas as pd
 
 torch.manual_seed(1)
-
-#####################################################################
-# Helper functions to make the code more readable.
 
 
 def argmax(vec):
@@ -153,7 +36,7 @@ class BiLSTM_CRF(nn.Module):
 
     def __init__(self, vocab_size, tag_to_ix, embedding_dim, hidden_dim):
         super(BiLSTM_CRF, self).__init__()
-        self.embedding_dim = embedding_dim
+        self.embedding_dim = embedding_dim  # 词向量维度
         self.hidden_dim = hidden_dim
         self.vocab_size = vocab_size
         self.tag_to_ix = tag_to_ix
@@ -195,18 +78,10 @@ class BiLSTM_CRF(nn.Module):
         for feat in feats:
             alphas_t = []  # The forward tensors at this timestep
             for next_tag in range(self.tagset_size):
-                # broadcast the emission score: it is the same regardless of
-                # the previous tag
                 emit_score = feat[next_tag].view(
                     1, -1).expand(1, self.tagset_size)
-                # the ith entry of trans_score is the score of transitioning to
-                # next_tag from i
                 trans_score = self.transitions[next_tag].view(1, -1)
-                # The ith entry of next_tag_var is the value for the
-                # edge (i -> next_tag) before we do log-sum-exp
                 next_tag_var = forward_var + trans_score + emit_score
-                # The forward variable for this tag is log-sum-exp of all the
-                # scores.
                 alphas_t.append(log_sum_exp(next_tag_var).view(1))
             forward_var = torch.cat(alphas_t).view(1, -1)
         terminal_var = forward_var + self.transitions[self.tag_to_ix[STOP_TAG]]
@@ -245,17 +120,10 @@ class BiLSTM_CRF(nn.Module):
             viterbivars_t = []  # holds the viterbi variables for this step
 
             for next_tag in range(self.tagset_size):
-                # next_tag_var[i] holds the viterbi variable for tag i at the
-                # previous step, plus the score of transitioning
-                # from tag i to next_tag.
-                # We don't include the emission scores here because the max
-                # does not depend on them (we add them in below)
                 next_tag_var = forward_var + self.transitions[next_tag]
                 best_tag_id = argmax(next_tag_var)
                 bptrs_t.append(best_tag_id)
                 viterbivars_t.append(next_tag_var[0][best_tag_id].view(1))
-            # Now add in the emission scores, and assign forward_var to the set
-            # of viterbi variables we just computed
             forward_var = (torch.cat(viterbivars_t) + feat).view(1, -1)
             backpointers.append(bptrs_t)
 
@@ -292,87 +160,198 @@ class BiLSTM_CRF(nn.Module):
 #####################################################################
 # Run training
 
-
 START_TAG = "<START>"
 STOP_TAG = "<STOP>"
 EMBEDDING_DIM = 5
 HIDDEN_DIM = 4
 
-# Make up some training data
-# training_data = [(
-#     "姜 文 的 侠 隐 也 变 成 了 2 0 1 9 贾 樟 柯 的 江 湖 儿 女".split(),
-#     "O O O B I O O O O O O O O O O O O B I I I".split()
-# ), (
-#     "2 0 1 9 好 在 还 有 娄 烨 的 地 狱 恋 人 今 年 的 年 度 的 期 待".split(),
-#     "O O O O O O O O O O O B I I I O O O O O O O O".split()
-# )]
 
-bs_training_data = [(
-    "姜文的侠隐也变成了2019贾樟柯的江湖儿女",
-    "OOOBIOOOOOOOOOOOOBIII"
-), (
-    "2019好在还有娄烨的地狱恋人今年的年度的期待",
-    "OOOOOOOOOOOBIIIOOOOOOOO"
-)]
+def run_training(epochs, model_name, data_divide):
+    # Make up some training data
+    # bs_training_data = [(
+    #     "姜文的侠隐也变成了2019贾樟柯的江湖儿女",
+    #     "OOOBIOOOOOOOOOOOOBIII"
+    # ), (
+    #     "2019好在还有娄烨的地狱恋人今年的年度的期待",
+    #     "OOOOOOOOOOOBIIIOOOOOOOO"
+    # )]
 
-test_data = [
-    "还有娄烨的地狱恋人今年的期待",
-    "我喜欢的电影是江湖儿女",
-    "英雄儿女是部好电影",
-    "人生是江湖儿女情长"
-]
+    bs_training_data = []
 
-word_to_ix = {}
-for sentence, tags in bs_training_data:
-    for word in sentence:
-        if word not in word_to_ix:
-            word_to_ix[word] = len(word_to_ix)
+    bs_format_data = pd.read_csv('format_data_UTF8.csv')
+    bs_sentence_data = bs_format_data['content']
+    bs_tags_data = bs_format_data['value']
+    for count in range(int(len(bs_sentence_data) / data_divide)):
+        item = (bs_sentence_data[count], bs_tags_data[count])
+        bs_training_data.append(item)
+    print(bs_training_data)
 
-for sentence in test_data:
-    for word in sentence:
-        if word not in word_to_ix:
-            word_to_ix[word] = len(word_to_ix)
+    datetime_start = dt.datetime.now()
+    print('start: ' + datetime_start.strftime('%Y-%m-%d %H:%M:%S'))
 
-tag_to_ix = {"B": 0, "I": 1, "O": 2, START_TAG: 3, STOP_TAG: 4}
+    test_data = [
+        "2019贾樟柯的《江湖儿女》2019陈冲的《英格力士》2019好在还有娄烨的《地狱恋人》"
+    ]
 
-model = BiLSTM_CRF(len(word_to_ix), tag_to_ix, EMBEDDING_DIM, HIDDEN_DIM)
-optimizer = optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-4)
+    word_to_ix = {}
+    for sentence in bs_sentence_data:
+        for word in sentence:
+            if word not in word_to_ix:
+                word_to_ix[word] = len(word_to_ix)
 
-# Check predictions before training
-# with torch.no_grad():
-#     precheck_sent = prepare_sequence(test_data[0], word_to_ix)
-#     # precheck_tags = torch.tensor([tag_to_ix[t] for t in bs_training_data[0][1]], dtype=torch.long)
-#     print(model(precheck_sent))
+    # for sentence in test_data:
+    #     for word in sentence:
+    #         if word not in word_to_ix:
+    #             word_to_ix[word] = len(word_to_ix)
 
-# Make sure prepare_sequence from earlier in the LSTM section is loaded
-for epoch in range(
-        300):  # again, normally you would NOT do 300 epochs, it is toy data
-    for sentence, tags in bs_training_data:
-        # Step 1. Remember that Pytorch accumulates gradients.
-        # We need to clear them out before each instance
-        model.zero_grad()
+    tag_to_ix = {"B": 0, "I": 1, "O": 2, START_TAG: 3, STOP_TAG: 4}
 
-        # Step 2. Get our inputs ready for the network, that is,
-        # turn them into Tensors of word indices.
-        sentence_in = prepare_sequence(sentence, word_to_ix)
-        targets = torch.tensor([tag_to_ix[t] for t in tags], dtype=torch.long)
+    model = BiLSTM_CRF(len(word_to_ix), tag_to_ix, EMBEDDING_DIM, HIDDEN_DIM)
+    optimizer = optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-4)
 
-        # Step 3. Run our forward pass.
-        loss = model.neg_log_likelihood(sentence_in, targets)
+    datetime_epoch = dt.datetime.now()
+    print('start epoch: ' + datetime_epoch.strftime('%Y-%m-%d %H:%M:%S'))
 
-        # Step 4. Compute the loss, gradients, and update the parameters by
-        # calling optimizer.step()
-        loss.backward()
-        optimizer.step()
+    # Check predictions before training
+    # with torch.no_grad():
+    #     precheck_sent = prepare_sequence(test_data[0], word_to_ix)
+    #     # precheck_tags = torch.tensor([tag_to_ix[t] for t in bs_training_data[0][1]], dtype=torch.long)
+    #     print(model(precheck_sent))
 
-# Check predictions after training
-with torch.no_grad():
-    # precheck_sent = prepare_sequence(training_data[0][0], word_to_ix)
-    # check_tags = torch.tensor([tag_to_ix[t] for t in bs_training_data[1][1]], dtype=torch.long)
-    for sentence in test_data:
-        print(sentence)
+    # Make sure prepare_sequence from earlier in the LSTM section is loaded
+    for epoch in range(
+            epochs):  # again, normally you would NOT do 300 epochs, it is toy data
+        datetime_epoch = dt.datetime.now()
+        print("epoch:" + str(epoch) + "    " + datetime_epoch.strftime('%Y-%m-%d %H:%M:%S'))
+
+        for sentence, tags in bs_training_data:
+
+            # Step 1. Remember that Pytorch accumulates gradients.
+            # We need to clear them out before each instance
+            model.zero_grad()
+
+            # Step 2. Get our inputs ready for the network, that is,
+            # turn them into Tensors of word indices.
+            sentence_in = prepare_sequence(sentence, word_to_ix)
+            targets = torch.tensor([tag_to_ix[t] for t in tags], dtype=torch.long)
+
+            # Step 3. Run our forward pass.
+            loss = model.neg_log_likelihood(sentence_in, targets)
+
+            # Step 4. Compute the loss, gradients, and update the parameters by
+            # calling optimizer.step()
+            loss.backward()
+            optimizer.step()
+
+    datetime_predict = dt.datetime.now()
+    print('end: ' + datetime_predict.strftime('%Y-%m-%d %H:%M:%S'))
+
+    torch.save(model, model_name + '.pkl')
+    # Check predictions after training
+    with torch.no_grad():
+        # precheck_sent = prepare_sequence(training_data[0][0], word_to_ix)
+        # check_tags = torch.tensor([tag_to_ix[t] for t in bs_training_data[1][1]], dtype=torch.long)
+        for sentence in test_data:
+            print(sentence)
+            check_sent = prepare_sequence(sentence, word_to_ix)
+            print(model(check_sent))
+            # predict_tag = model(check_sent)[1]
+            # word_list = []
+            # temp_word = []
+            # for tag_i in range(len(predict_tag)):
+            #     if predict_tag[tag_i] == 0:
+            #         temp_word.append(sentence[tag_i])
+            #     elif predict_tag[tag_i] == 1 and len(temp_word) != 0:
+            #         temp_word.append(sentence[tag_i])
+            #     elif predict_tag[tag_i] == 2 and len(temp_word) != 0:
+            #         word_list.append(''.join(temp_word))
+            #         temp_word.clear()
+            # if len(temp_word) != 0:
+            #     word_list.append(temp_word)
+            #     temp_word.clear()
+            # print(word_list)
+
+
+def load_model(model_name):
+    model = torch.load(model_name + '.pkl')
+    test_data = [
+        # "还有娄烨的地狱恋人今年的期待",
+        # "我喜欢的电影是江湖儿女",
+        # "英雄儿女是部好电影",
+        # "人生是江湖儿女情长",
+        # "侠隐是电影江湖儿女的导演吗",
+        "姜文的《侠隐》也变成了2019贾樟柯的《江湖儿女》2019陈冲的《英格力士》2019好在还有娄烨的《地狱恋人》，今年的年度期待就是这部了吧。还有张艺谋的《影》，看了剧照很棒，但主演是邓超孙俪吴磊，或许可以期待一下",
+        # "今天你去看英雄儿女了吗",
+        # "电影《澳门风云》在京首映",
+        # "今天你去看《人在囧途》了吗"
+    ]
+    bs_format_data = pd.read_csv('format_data_UTF8.csv')
+    test_sentence_data = bs_format_data['content']
+    test_tags_data = bs_format_data['value']
+    test_training_data = []
+    for count in range(int(len(test_sentence_data) / 2), int(len(test_sentence_data))):
+        item = (test_sentence_data[count], test_tags_data[count])
+        test_training_data.append(item)
+    # print(test_training_data)
+
+    word_format_data = pd.read_csv('format_data_UTF8.csv')
+    word_sentence_data = word_format_data['content']
+    word_to_ix = {}
+    for sentence in word_sentence_data:
+        for word in sentence:
+            if word not in word_to_ix:
+                word_to_ix[word] = len(word_to_ix)
+
+    accurate = 0
+    count = 0
+    count_true = 0
+    TP = 0
+    FP = 0  #
+    TN = 0  # 恒为0
+    TP_TN = 0
+    for sentence, tags in test_training_data:
+        count += 1
+        if sentence.find('B') != -1:
+            TP_TN += 1
+
+        # print(sentence)
         check_sent = prepare_sequence(sentence, word_to_ix)
-        print(model(check_sent))
+        predict_result = model(check_sent)
+        predict_BIO_list = predict_result[1]
+        predict_BIO = ''
+        for item in predict_BIO_list:
+            temp = ''
+            if item == 0:
+                temp = 'B'
+            elif item == 1:
+                temp = 'I'
+            elif item == 2:
+                temp = 'O'
+            else:
+                temp = 'O'
+            predict_BIO += temp
+        if tags.find('B') != -1:
+            count_true += 1
+        if tags == predict_BIO:
+            accurate += 1
+            if tags.find('B') != -1:
+                TP += 1
+                print(sentence)
+                print(predict_BIO)
+        # elif tags.find('B') == -1 and predict_BIO.find('B') != -1:
+        elif tags != predict_BIO and predict_BIO.find('B') != -1:
+                FP += 1
+
+    print(model_name + '.pkl')
+    print('count:' + str(count) + '; ' + 'count_true:' + str(count_true) + '; ' + 'accurate_count:' + str(accurate) + '; ' + str(accurate / count))
+    print('TP:' + str(TP) + '; ' + 'FP:' + str(FP))
+
+
+if __name__ == '__main__':
+    # run_training(50, 'model_50_50', 50)
+    # load_model('model_800_300')
+    load_model('model_50_50')
+
 # We got it!
 
 
