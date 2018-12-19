@@ -6,6 +6,11 @@ import torch.nn as nn
 import torch.optim as optim
 import datetime as dt
 import pandas as pd
+import time
+import csv
+import sys
+maxInt = sys.maxsize
+decrement = True
 
 torch.manual_seed(1)
 
@@ -17,7 +22,11 @@ def argmax(vec):
 
 
 def prepare_sequence(seq, to_ix):
-    idxs = [to_ix[w] for w in seq]
+    # idxs = [to_ix[w] for w in seq]
+    idxs = []
+    for w in seq:
+        # print(w)
+        idxs.append(to_ix[w])
     return torch.tensor(idxs, dtype=torch.long)
 
 
@@ -280,12 +289,11 @@ def load_model(model_name):
         # "英雄儿女是部好电影",
         # "人生是江湖儿女情长",
         # "侠隐是电影江湖儿女的导演吗",
-        "姜文的《侠隐》也变成了2019贾樟柯的《江湖儿女》2019陈冲的《英格力士》2019好在还有娄烨的《地狱恋人》，今年的年度期待就是这部了吧。还有张艺谋的《影》，看了剧照很棒，但主演是邓超孙俪吴磊，或许可以期待一下",
-        # "今天你去看英雄儿女了吗",
-        # "电影《澳门风云》在京首映",
+        "你哭了无问西东吗",
         # "今天你去看《人在囧途》了吗"
     ]
-    bs_format_data = pd.read_csv('format_data_UTF8.csv')
+
+    bs_format_data = pd.read_csv('format_data_new.csv')
     test_sentence_data = bs_format_data['content']
     test_tags_data = bs_format_data['value']
     test_training_data = []
@@ -294,7 +302,7 @@ def load_model(model_name):
         test_training_data.append(item)
     # print(test_training_data)
 
-    word_format_data = pd.read_csv('format_data_UTF8.csv')
+    word_format_data = pd.read_csv('format_data_new.csv')
     word_sentence_data = word_format_data['content']
     word_to_ix = {}
     for sentence in word_sentence_data:
@@ -309,6 +317,10 @@ def load_model(model_name):
     FP = 0  #
     TN = 0  # 恒为0
     TP_TN = 0
+    for sentence in test_data:
+        print(sentence)
+        check_sent = prepare_sequence(sentence, word_to_ix)
+        print(model(check_sent))
     for sentence, tags in test_training_data:
         count += 1
         if sentence.find('B') != -1:
@@ -347,10 +359,449 @@ def load_model(model_name):
     print('TP:' + str(TP) + '; ' + 'FP:' + str(FP))
 
 
+while decrement:
+    decrement = False
+    try:
+        csv.field_size_limit(maxInt)
+    except OverflowError:
+        maxInt = int(maxInt / 10)
+        decrement = True
+
+
+def run_BEMS_training(epochs):
+    bs_training_data = []
+    bs_sentence = ''
+    bs_tags = ''
+    with open("BMEStrain.data", "r", encoding="utf-8") as csvfile:
+        read = csv.reader(csvfile)
+        for item in read:
+            if len(item) != 0:
+                if len(item[0]) != 0:
+                    bs_sentence += item[0][0]
+                    if len(item[0]) > 2:
+                        bs_tags_data = item[0][2]
+                    else:
+                        bs_tags_data = item[0][len(item) - 1]
+                    if bs_tags_data == 'B':
+                        bs_tags += 'B'
+                    elif bs_tags_data == 'M' or bs_tags_data == 'E':
+                        bs_tags += 'I'
+                    else:
+                        bs_tags += 'O'
+            else:
+                train_item = (bs_sentence, bs_tags)
+                bs_training_data.append(train_item)
+                bs_sentence = ''
+                bs_tags = ''
+    print(bs_training_data)
+
+    bs_test_data = []
+    bs_sentence = ''
+    bs_tags = ''
+    with open("BMEStest.data", "r", encoding="utf-8") as csvfile:
+        read = csv.reader(csvfile)
+        for item in read:
+            if len(item) != 0:
+                if len(item[0]) != 0:
+                    bs_sentence += item[0][0]
+                    if len(item[0]) > 2:
+                        bs_tags_data = item[0][2]
+                    else:
+                        bs_tags_data = item[0][len(item) - 1]
+                    if bs_tags_data == 'B':
+                        bs_tags += 'B'
+                    elif bs_tags_data == 'M' or bs_tags_data == 'E':
+                        bs_tags += 'I'
+                    else:
+                        bs_tags += 'O'
+            else:
+                train_item = (bs_sentence, bs_tags)
+                bs_test_data.append(train_item)
+                bs_sentence = ''
+                bs_tags = ''
+    print(bs_test_data)
+
+    datetime_start = dt.datetime.now()
+    print('start: ' + datetime_start.strftime('%Y-%m-%d %H:%M:%S'))
+
+    test_data = [
+        "2019贾樟柯的江湖儿女2019陈冲的《英格力士》2019好在还有地狱恋人"
+    ]
+
+    word_to_ix = {}
+    for sentence, tags in bs_training_data:
+        for word in sentence:
+            if word not in word_to_ix:
+                word_to_ix[word] = len(word_to_ix)
+
+    for sentence, tags in bs_test_data:
+        for word in sentence:
+            if word not in word_to_ix:
+                word_to_ix[word] = len(word_to_ix)
+
+    tag_to_ix = {"B": 0, "I": 1, "O": 2, START_TAG: 3, STOP_TAG: 4}
+
+    model = BiLSTM_CRF(len(word_to_ix), tag_to_ix, EMBEDDING_DIM, HIDDEN_DIM)
+    optimizer = optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-4)
+
+    datetime_epoch = dt.datetime.now()
+    print('start epoch: ' + datetime_epoch.strftime('%Y-%m-%d %H:%M:%S'))
+
+    # Make sure prepare_sequence from earlier in the LSTM section is loaded
+    for epoch in range(
+            epochs):  # again, normally you would NOT do 300 epochs, it is toy data
+        datetime_epoch = dt.datetime.now()
+        print("epoch:" + str(epoch) + "    " + datetime_epoch.strftime('%Y-%m-%d %H:%M:%S'))
+
+        for sentence, tags in bs_training_data:
+            # Step 1. Remember that Pytorch accumulates gradients.
+            # We need to clear them out before each instance
+            model.zero_grad()
+
+            # Step 2. Get our inputs ready for the network, that is,
+            # turn them into Tensors of word indices.
+            sentence_in = prepare_sequence(sentence, word_to_ix)
+            targets = torch.tensor([tag_to_ix[t] for t in tags], dtype=torch.long)
+
+            # Step 3. Run our forward pass.
+            loss = model.neg_log_likelihood(sentence_in, targets)
+
+            # Step 4. Compute the loss, gradients, and update the parameters by
+            # calling optimizer.step()
+            loss.backward()
+            optimizer.step()
+
+    datetime_predict = dt.datetime.now()
+    print('end: ' + datetime_predict.strftime('%Y-%m-%d %H:%M:%S'))
+
+    torch.save(model, 'model_BMES_' + str(epochs) + '.pkl')
+    # Check predictions after training
+    with torch.no_grad():
+        for sentence in test_data:
+            print(sentence)
+            check_sent = prepare_sequence(sentence, word_to_ix)
+            print(model(check_sent))
+
+
+def run_test(epochs):
+    model = torch.load('model_BMES_' + str(epochs) + '.pkl')
+    bs_test_data = []
+    bs_sentence = ''
+    bs_tags = ''
+    with open("BMEStest.data", "r", encoding="utf-8") as csvfile:
+        read = csv.reader(csvfile)
+        for item in read:
+            if len(item) != 0:
+                if len(item[0]) != 0:
+                    bs_sentence += item[0][0]
+                    if len(item[0]) > 2:
+                        bs_tags_data = item[0][2]
+                    else:
+                        bs_tags_data = item[0][len(item) - 1]
+                    if bs_tags_data == 'B':
+                        bs_tags += 'B'
+                    elif bs_tags_data == 'M' or bs_tags_data == 'E':
+                        bs_tags += 'I'
+                    else:
+                        bs_tags += 'O'
+            else:
+                train_item = (bs_sentence, bs_tags)
+                bs_test_data.append(train_item)
+                bs_sentence = ''
+                bs_tags = ''
+    print(bs_test_data)
+
+    # vector
+    bs_training_data = []
+    bs_sentence = ''
+    bs_tags = ''
+    with open("BMEStrain.data", "r", encoding="utf-8") as csvfile:
+        read = csv.reader(csvfile)
+        for item in read:
+            if len(item) != 0:
+                if len(item[0]) != 0:
+                    bs_sentence += item[0][0]
+                    if len(item[0]) > 2:
+                        bs_tags_data = item[0][2]
+                    else:
+                        bs_tags_data = item[0][len(item) - 1]
+                    if bs_tags_data == 'B':
+                        bs_tags += 'B'
+                    elif bs_tags_data == 'M' or bs_tags_data == 'E':
+                        bs_tags += 'I'
+                    else:
+                        bs_tags += 'O'
+            else:
+                train_item = (bs_sentence, bs_tags)
+                bs_training_data.append(train_item)
+                bs_sentence = ''
+                bs_tags = ''
+    word_to_ix = {}
+    for sentence, tags in bs_training_data:
+        for word in sentence:
+            if word not in word_to_ix:
+                word_to_ix[word] = len(word_to_ix)
+    for sentence, tags in bs_test_data:
+        for word in sentence:
+            if word not in word_to_ix:
+                word_to_ix[word] = len(word_to_ix)
+
+    count_entity = 0
+    count_sentence = 0
+    predict_entities = []
+    test_BIOs = []
+    predict_count = 0
+    bs_test_data_count = len(bs_test_data)
+    bs_test_data_group = int(bs_test_data_count / 5)
+    print('bs_test_data_count:' + str(bs_test_data_count))
+    # for group_i in range(0, bs_test_data_group):
+    #     group_start = group_i * 5
+    #     group_end = (group_i + 1) * 5
+    for count_i in range(bs_test_data_count):
+        if count_i >= bs_test_data_count:
+            break
+        sentence = bs_test_data[count_i][0]
+        tags = bs_test_data[count_i][1]
+    # for sentence, tags in bs_test_data:
+        count_sentence += 1
+        if tags.find('B') != -1:
+            count_entity += tags.count('B')
+        # predict
+        print(sentence)
+        with torch.no_grad():
+            check_sent = prepare_sequence(sentence, word_to_ix)
+            predict_result = model(check_sent)
+            predict_BIO_list = predict_result[1]  # {1,2,2,2,2,2,2}
+            predict_BIO = []  # {位置}
+            for item_i in range(len(predict_BIO_list)):
+                if predict_BIO_list[item_i] == 0:  # B
+                    predict_count += 1
+                    predict_BIO.append(sentence[item_i])
+                elif predict_BIO_list[item_i] == 1:  # I
+                    predict_BIO.append(sentence[item_i])
+                else:
+                    if len(predict_BIO) != 0:
+                        str_BIO = ''.join(predict_BIO)
+                        predict_entities.append(str_BIO)
+                        predict_BIO.clear()
+            if len(predict_BIO) != 0:
+                predict_entities.append(predict_BIO)
+                predict_BIO.clear()
+            print('predict_entities:' + str(len(predict_entities)))
+            print(predict_entities)
+        # test data
+        test_BIO = []
+        for tags_i in range(len(tags)):
+            if tags[tags_i] == 'B':
+                test_BIO.append(sentence[tags_i])
+            elif tags[tags_i] == 'I':
+                test_BIO.append(sentence[tags_i])
+            else:
+                if len(test_BIO) != 0:
+                    test_BIOs.append(''.join(test_BIO))
+                    test_BIO.clear()
+        if len(test_BIO) != 0:
+            test_BIOs.append(test_BIO)
+            test_BIO.clear()
+        print('test_BIOs:' + str(len(test_BIOs)))
+        print(test_BIOs)
+            # calculate
+            # if ()
+        # time.sleep(5)
+
+
+    print(str(epochs) + '.pkl')
+    print('count_sentence:' + str(count_sentence) + '; count_entity:' + str(count_entity) + ' ;test_BIOs:' + str(len(test_BIOs)) + ' ;predict_count:' + str(predict_count))
+    # print('count:' + str(count) + '; ' + 'count_true:' + str(count_true) + '; ' + 'accurate_count:' + str(
+    #     accurate) + '; ' + str(accurate / count))
+
+    TP = 0  # 正确
+    FP = 0  # 其他分类 识别出的
+    TN = 0  # 不是反而被识别出的
+    FN = 0  # 漏报
+    for item in predict_entities:
+        if item in test_BIOs:
+            TP += 1  # 将正类预测为正类数
+        else:
+            FP += 1  # 将负类预测为正类数(误报)
+    for item in test_BIOs:
+        if item not in predict_entities:
+            FN += 1  # 将正类预测为负类
+
+    P_score = 0.00
+    R_score = 0.00
+    F_score = 0.00
+    if TP + FP != 0:
+        P_score = TP / (TP + FP)
+    if TP + FN != 0:
+        R_score = TP / (TP + FN)
+    if P_score + R_score != 0:
+        F_score = 2 * P_score * R_score / (P_score + R_score)
+    print('TP:' + str(TP) + '; ' + 'FP:' + str(FP) + '; ' + 'FN:' + str(FN))
+    print('P:' + str(P_score) + '; ' + 'R:' + str(R_score) + '; ' + 'F-value:' + str(F_score))
+
+
+def run_model(model_name):
+    model = torch.load('model_BMES_' + str(model_name) + '.pkl')
+    bs_test_data = []
+    bs_sentence = ''
+    bs_tags = ''
+    with open("BMEStest.data", "r", encoding="utf-8") as csvfile:
+        read = csv.reader(csvfile)
+        for item in read:
+            if len(item) != 0:
+                if len(item[0]) != 0:
+                    bs_sentence += item[0][0]
+                    if len(item[0]) > 2:
+                        bs_tags_data = item[0][2]
+                    else:
+                        bs_tags_data = item[0][len(item) - 1]
+                    if bs_tags_data == 'B':
+                        bs_tags += 'B'
+                    elif bs_tags_data == 'M' or bs_tags_data == 'E':
+                        bs_tags += 'I'
+                    else:
+                        bs_tags += 'O'
+            else:
+                train_item = (bs_sentence, bs_tags)
+                bs_test_data.append(train_item)
+                bs_sentence = ''
+                bs_tags = ''
+    print(bs_test_data)
+
+    # vector
+    bs_training_data = []
+    bs_sentence = ''
+    bs_tags = ''
+    with open("BMEStrain.data", "r", encoding="utf-8") as csvfile:
+        read = csv.reader(csvfile)
+        for item in read:
+            if len(item) != 0:
+                if len(item[0]) != 0:
+                    bs_sentence += item[0][0]
+                    if len(item[0]) > 2:
+                        bs_tags_data = item[0][2]
+                    else:
+                        bs_tags_data = item[0][len(item) - 1]
+                    if bs_tags_data == 'B':
+                        bs_tags += 'B'
+                    elif bs_tags_data == 'M' or bs_tags_data == 'E':
+                        bs_tags += 'I'
+                    else:
+                        bs_tags += 'O'
+            else:
+                train_item = (bs_sentence, bs_tags)
+                bs_training_data.append(train_item)
+                bs_sentence = ''
+                bs_tags = ''
+    word_to_ix = {}
+    for sentence, tags in bs_training_data:
+        for word in sentence:
+            if word not in word_to_ix:
+                word_to_ix[word] = len(word_to_ix)
+    for sentence, tags in bs_test_data:
+        for word in sentence:
+            if word not in word_to_ix:
+                word_to_ix[word] = len(word_to_ix)
+
+    count_entity = 0
+    count_sentence = 0
+    predict_entities = []
+    test_BIOs = []
+    predict_count = 0
+    bs_test_data_count = len(bs_test_data)
+    bs_test_data_group = int(bs_test_data_count / 5)
+    print('bs_test_data_count:' + str(bs_test_data_count))
+    # for group_i in range(0, bs_test_data_group):
+    #     group_start = group_i * 5
+    #     group_end = (group_i + 1) * 5
+    read_data = pd.read_csv('test_BMES.csv')
+    test_sentences = read_data['content']
+    test_tags = read_data['value']
+    for sentence_i in range(len(test_sentences)):
+        sentence = test_sentences[sentence_i]
+        tags = test_tags[sentence_i]
+        count_sentence += 1
+        if tags.find('B') != -1:
+            count_entity += tags.count('B')
+        # predict
+        print(sentence)
+        with torch.no_grad():
+            check_sent = prepare_sequence(sentence, word_to_ix)
+            predict_result = model(check_sent)
+            predict_BIO_list = predict_result[1]  # {1,2,2,2,2,2,2}
+            predict_BIO = []  # {位置}
+            for item_i in range(len(predict_BIO_list)):
+                if predict_BIO_list[item_i] == 0:  # B
+                    predict_count += 1
+                    predict_BIO.append(sentence[item_i])
+                elif predict_BIO_list[item_i] == 1:  # I
+                    predict_BIO.append(sentence[item_i])
+                else:
+                    if len(predict_BIO) != 0:
+                        str_BIO = ''.join(predict_BIO)
+                        predict_entities.append(str_BIO)
+                        predict_BIO.clear()
+            if len(predict_BIO) != 0:
+                predict_entities.append(predict_BIO)
+                predict_BIO.clear()
+            print('predict_entities:' + str(len(predict_entities)))
+            print(predict_entities)
+        # test data
+        test_BIO = []
+        for tags_i in range(len(tags)):
+            if tags[tags_i] == 'B':
+                test_BIO.append(sentence[tags_i])
+            elif tags[tags_i] == 'I':
+                test_BIO.append(sentence[tags_i])
+            else:
+                if len(test_BIO) != 0:
+                    test_BIOs.append(''.join(test_BIO))
+                    test_BIO.clear()
+        if len(test_BIO) != 0:
+            test_BIOs.append(test_BIO)
+            test_BIO.clear()
+        print('test_BIOs:' + str(len(test_BIOs)))
+        print(test_BIOs)
+        # calculate
+        # if ()
+        # time.sleep(5)
+
+    print(str(model_name) + '.pkl')
+    print('count_sentence:' + str(count_sentence) + '; count_entity:' + str(count_entity) + ' ;test_BIOs:' + str(
+        len(test_BIOs)) + ' ;predict_count:' + str(predict_count))
+    # print('count:' + str(count) + '; ' + 'count_true:' + str(count_true) + '; ' + 'accurate_count:' + str(
+    #     accurate) + '; ' + str(accurate / count))
+
+    TP = 0  # 正确
+    FP = 0  # 其他分类 识别出的, 0
+    TN = 0  # 不是反而被识别出的
+    for item in predict_entities:
+        if item in test_BIOs:
+            TP += 1
+        else:
+            TN += 1
+
+    P_score = 0.00
+    R_score = 0.00
+    F_score = 0.00
+    if TP + FP != 0:
+        P_score = TP / (TP + FP)
+    if TP + TN != 0:
+        R_score = TP / (TP + TN)
+    if P_score + R_score != 0:
+        F_score = 2 * P_score * R_score / (P_score + R_score)
+    print('TP:' + str(TP) + '; ' + 'TN:' + str(TN))
+    print('P:' + str(P_score) + '; ' + 'R:' + str(R_score) + '; ' + 'F-value:' + str(F_score))
+
+
 if __name__ == '__main__':
-    # run_training(50, 'model_50_50', 50)
-    # load_model('model_800_300')
-    load_model('model_50_50')
+    # run_training(10, 'model_2_10_no', 2)
+    # load_model('model_50_50_no')
+    # load_model('model_20_50')
+    # run_BEMS_training(20)
+    run_test(20)
+    # run_model(8)
 
 # We got it!
 
